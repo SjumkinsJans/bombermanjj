@@ -3,6 +3,12 @@
 char **grid = NULL;
 int y_border;
 int x_border;
+
+bomb_t *bombs = NULL;
+int bomb_count = 0;
+int player_row;
+int player_col;
+
 uint16_t player_base_speed; // blocks/ticks
 uint16_t exp_dur; //explosion duration (ticks)
 uint8_t exp_dist; //explosion distantce (ticks) 
@@ -93,6 +99,24 @@ int get_grid() {
     return 0;
 }
 
+void place_bomb(int row, int col) {
+    for (int i = 0; i < bomb_count; i++) {
+        if (bombs[i].row == row && bombs[i].col == col) {
+            return;
+        }
+    }
+
+    bombs = realloc(bombs, (bomb_count + 1) * sizeof(bomb_t));
+    bombs[bomb_count].active = true;
+    bombs[bomb_count].row = row;
+    bombs[bomb_count].col = col;
+    bombs[bomb_count].timer = exp_timer;
+    bombs[bomb_count].radius = exp_dist;
+
+    grid[row][col] = '@';
+    bomb_count++;
+}
+
 void get_shared_memory() {
 
 }
@@ -135,16 +159,33 @@ void gameloop() {
             case 27: // Escape
                 play = 0; break;
             case ' ':
-                grid[ypos][xpos] = '@'; break; // @ - bumba
+                place_bomb(ypos, xpos);
+                break;
         }
         
-        if(grid[ypos][xpos+dx] == '.') {
-            xpos+=dx;
+        int next_y = ypos + dy;
+        int next_x = xpos + dx;
+
+        if (next_y >= 0 && next_y < y_border && next_x >= 0 && next_x < x_border) {
+            
+            char target = grid[next_y][next_x];
+            
+            if (target == '.' || target == 'A' || target == 'R' || target == 'T') {
+                ypos = next_y;
+                xpos = next_x;
+            }
+        } 
+
+        for (int i = 0; i < bomb_count; i++) {
+            if (bombs[i].active) {
+                bombs[i].timer--;
+                if (bombs[i].timer == 0) {
+
+                    grid[bombs[i].row][bombs[i].col] = '.';
+                    bombs[i].active = false;
+                }
+            }
         }
-        if(grid[ypos+dy][xpos] == '.') {
-            ypos+=dy;
-        }
-        
         refresh();
         usleep(50000); 
         // specifikācijā rakstīts, ka spēles stāvoklis tiek atjaunināts 20 reizes sekundē(ticks).

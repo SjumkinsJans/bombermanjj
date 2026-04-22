@@ -58,6 +58,14 @@ MSG_SYNC_BOARD = 100,
 MSG_SYNC_REQUEST = 101
 } msg_type_t;
 
+typedef struct {
+bool active;
+int row;
+int col;
+uint16_t timer;
+uint8_t radius;
+} bomb_t;
+
 
 typedef struct {
 uint8_t id;
@@ -72,15 +80,6 @@ uint8_t bomb_radius;
 uint16_t bomb_timer_ticks;
 uint16_t speed;
 } player_t;
-
-typedef struct {
-bool active;
-uint8_t owner_id;
-uint16_t row;
-uint16_t col;
-uint8_t radius; // manto no spēlētāja
-uint16_t timer_ticks; // cik palika līdz sprādzienam ? 
-} bomb_t;
 
 // atgriež šunas indeksu/atrašanas poz. uz spēles reģža 
 static inline uint16_t make_cell_index(uint16_t row, uint16_t cols, uint16_t col) {
