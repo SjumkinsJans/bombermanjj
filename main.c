@@ -35,7 +35,8 @@ int main(void) {
     }
     return 0;
 }
-
+int player_y_pos;
+int player_x_pos;
 //ielasam *izvēlēto* spēles režģi
 int get_grid() {
     FILE *fin =  fopen("grid1","r");
@@ -77,6 +78,16 @@ int get_grid() {
         // printf("\n");
     }
 
+    for (int y = 0; y < y_border; y++) {
+    for (int x = 0; x < x_border; x++) {
+        if (grid[y][x] == '1') {
+            player_y_pos = y;
+            player_x_pos = x;
+            grid[y][x] = '.';
+        }
+    }
+}
+
     fclose(fin);
     printf("Grid loaded successfully !\n");
     return 0;
@@ -95,8 +106,8 @@ void gameloop() {
     
     //render loop
     int input;
-    int xpos = 1;
-    int ypos = 1;
+    int xpos = player_x_pos;
+    int ypos = player_y_pos;
     int play = 1;
     while(play) {
         clear();
