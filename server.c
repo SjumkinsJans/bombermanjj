@@ -11,17 +11,18 @@
 
 int find_free_id();
 void* process_client(void* arg);
+void load_grid();
 
 char* recv_hello(int clientSocket,uint8_t sender_id,uint8_t target_id);
 void recv_leave(int clientSock,uint8_t sender_id,uint8_t target_id);
 void recv_set_ready(int clientSock,uint8_t sender_id,uint8_t target_id);
-uint8_t recv_move_attempt(uint8_t clientSocket,uint8_t client_id,uint8_t target_id);
+uint16_t recv_move_attempt(uint8_t clientSocket,uint8_t client_id,uint8_t target_id);
 
 void send_welcome(int clientSocket,uint8_t clientId,const char *senderName);
 void send_disconnect(int clientSocket,uint8_t clientId);
 void broadcast_send_set_status(uint8_t gm_status);
 void broadcast_send_map(char *grid,uint8_t w,uint8_t h);
-void broadcast_send_moved(uint8_t clientId, uint8_t new_pos);
+void broadcast_send_moved(uint8_t clientId, uint16_t new_pos);
 
 void prepare_map(char *grid,uint8_t w,uint8_t h);
 
@@ -29,38 +30,37 @@ uint8_t game_status = GAME_LOBBY;
 uint8_t clientCount = 0;
 uint8_t players_ready = 0;
 uint8_t freeClientIds[MAX_PLAYERS];
-uint8_t y_border = 11;
-uint8_t x_border = 21;
+
+uint8_t y_border;
+uint8_t x_border;
+uint8_t global_speed;
+
+
+uint8_t global_exp_danger;
+uint8_t global_exp_r;
+uint8_t global_exp_timer;
+
+uint64_t last_movement_ms[MAX_PLAYERS];
 player_t players[MAX_PLAYERS];
 
-char grid[11*21] = {
-"#####################"
-"#0.......#..........#"
-"#........#.......2..#"
-"#........#..........#"
-"#........#####......#"
-"#............#......#"
-"#....#####...#......#"
-"#........#...#......#"
-"#........#...#..1...#"
-"#........#..........#"
-"#####################"
-};
+char *grid = NULL;
 
 int client_sockets[MAX_PLAYERS];
 pthread_mutex_t server_mutex = PTHREAD_MUTEX_INITIALIZER;
 int main(void) {
     memset(freeClientIds, 0, sizeof(freeClientIds));
     memset(players, 0, sizeof(players));
+    memset(last_movement_ms, 0, sizeof(last_movement_ms));
     memset(client_sockets, -1, sizeof(client_sockets));
+    //load_grid();
     printf("It's a server !\n");
     int serverSockD = socket(AF_INET,SOCK_STREAM,0);
-    for(int i = 0;i < 11;i++) {
-        for(int j = 0;j < 21;j++) {
-            printf("%c",grid[i*21+j]);
-        }
-        printf("\n");
-    }
+    // for(int i = 0;i < y_border;i++) {
+    //     for(int j = 0;j < x_border;j++) {
+    //         printf("%c",grid[i*x_border+j]);
+    //     }
+    //     printf("\n");
+    // }
 
     //define server address
     struct sockaddr_in servAddr;
@@ -104,7 +104,7 @@ int main(void) {
         pthread_create(&client_thread,NULL,process_client,(void*)(intptr_t)new_id);
         pthread_detach(client_thread); // When this thread exits, automatically free its resources
     }
-    
+    if (grid) free(grid);
     return 0;
 
 } // end of main ================================================================================================================================================================================================================================
@@ -116,6 +116,45 @@ int find_free_id() {
         }
     }
     return -1;
+}
+
+void load_grid() {
+    srand(time(NULL));
+    int x = rand()%3;
+    char path[10] = "./grids/";
+    path[8] = x+48;
+    FILE* fin = fopen(path,"r");
+
+    fscanf(fin, "%hhd %hhd %hhd %hhd %hhd %hhd",&y_border, &x_border,&global_speed, &global_exp_danger,&global_exp_r, &global_exp_timer);
+    fgetc(fin); 
+    pthread_mutex_lock(&server_mutex);
+    if (grid) free(grid); // if it's not a first game, clear the previous map and reserve memory for a new one 
+    grid = malloc(y_border * x_border);
+
+    for(int i = 0;i < MAX_PLAYERS;i++) {
+        if(client_sockets[i] == -1) {
+            continue;
+        }
+        players[i].speed = global_speed;
+        players[i].bomb_timer_ticks = global_exp_danger;
+        players[i].bomb_count = global_exp_timer;
+        players[i].bomb_radius = global_exp_r;
+    }
+    // I know I should read it into a buffer because reading from a file is a costly operation.
+    // But last I tried it, I swear to good, it had such unforseen results that
+    // I had to 
+    char buffer[x_border + 2];   // +2 for newline and null terminator
+    for (int row = 0; row < y_border; row++) {
+        fgets(buffer, sizeof(buffer), fin);
+        // Remove trailing newline (if present)
+        buffer[strcspn(buffer, "\n")] = '\0';
+        // Copy exactly x_border characters into the flat grid
+        for (int col = 0; col < x_border; col++) {
+            grid[row * x_border + col] = buffer[col];
+        }
+    }
+    pthread_mutex_unlock(&server_mutex);
+    fclose(fin);
 }
 
 void* process_client(void* arg) {
@@ -150,7 +189,10 @@ void* process_client(void* arg) {
             recv_set_ready(clientSocket,client_id,target_id);
             break;
         case MSG_MOVE_ATTEMPT:
-            uint8_t new_pos = recv_move_attempt(clientSocket,client_id,target_id); 
+            uint16_t new_pos = recv_move_attempt(clientSocket,client_id,target_id);
+            if(new_pos == -1) {
+                break;
+            } 
             if(grid[new_pos] == '.')
                 broadcast_send_moved(client_id,new_pos);
             break;
@@ -209,25 +251,43 @@ void recv_leave(int clientSock,uint8_t sender_id,uint8_t target_id) {
 
 void recv_set_ready(int clientSock,uint8_t sender_id,uint8_t target_id) {
     pthread_mutex_lock(&server_mutex);
-    players_ready++;
-    players[sender_id].ready = 1;
+    if(players[sender_id].ready == 0 ) {
+        players[sender_id].ready = 1;
+        players_ready++;
+        printf("Clients %d is ready ! ",sender_id);
+    } else {
+        players[sender_id].ready = 0;
+        players_ready--;
+        printf("Clients %d is ready ! ",sender_id);
+    }
+    printf("Total players ready : %d \n",players_ready);
+    
     pthread_mutex_unlock(&server_mutex);
-    printf("Clients %d is ready ! Total players ready : %d \n",sender_id,players_ready);
+    
     if(players_ready > 1 && players_ready == clientCount) {
         printf("Visi ir gatavi ! Let's goooo ! \n");
         broadcast_send_set_status(GAME_RUNNING);
-        prepare_map((char*)grid,21,11);
-        usleep(2);
-        broadcast_send_map((char*)grid,21,11);
+        load_grid();
+        prepare_map((char*)grid,x_border,y_border);
+        broadcast_send_map((char*)grid,x_border,y_border);
     }
     
 }
 
-uint8_t recv_move_attempt(uint8_t clientSocket,uint8_t client_id,uint8_t target_id) {
+uint16_t recv_move_attempt(uint8_t clientSocket,uint8_t client_id,uint8_t target_id) {
     uint8_t dir;
-    uint8_t move;
+    int move;
     recv_all(clientSocket,&dir,1,0);
-    printf("%s want's to move %d ! \n",players[client_id].name,dir);
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint64_t now = (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    pthread_mutex_lock(&server_mutex);
+    if(now-last_movement_ms[client_id] < 1000/players[client_id].speed) {
+        pthread_mutex_unlock(&server_mutex);
+        return -1;
+    }
+    last_movement_ms[client_id] = now;
+    pthread_mutex_unlock(&server_mutex);
     switch (dir) {
         case 0:
             move = -x_border;
@@ -242,6 +302,7 @@ uint8_t recv_move_attempt(uint8_t clientSocket,uint8_t client_id,uint8_t target_
             move = +1;
             break;
     }
+    //printf("%s want's to move to %d ! \n",players[client_id].name,players[client_id].pos+move);
     return players[client_id].pos+move;
 }
 
@@ -332,11 +393,17 @@ void broadcast_send_map(char *grid,uint8_t w,uint8_t h) {
     pthread_mutex_unlock(&server_mutex);
 }
 
-void broadcast_send_moved(uint8_t clientId, uint8_t new_pos) {
+void broadcast_send_moved(uint8_t clientId, uint16_t new_pos) {
     pthread_mutex_lock(&server_mutex);
     uint16_t old_posi = players[clientId].pos;
+    grid[old_posi] = '.';
+    grid[new_pos] = clientId+48;
+    pthread_mutex_unlock(&server_mutex);
     players[clientId].pos = new_pos;
     for(int i = 0; i < MAX_PLAYERS;i++) {
+        if(client_sockets[i] == -1) {
+            continue;
+        }
         msg_moved_t header;
         header.msg_type = MSG_MOVED;
         header.sender_id = 254;
@@ -344,9 +411,8 @@ void broadcast_send_moved(uint8_t clientId, uint8_t new_pos) {
 
         header.client_id = clientId;
         header.old_pos = old_posi;
-        grid[header.old_pos] = '.';
         header.new_pos = players[clientId].pos;
-        grid[header.new_pos] = clientId+48;
+        
         
         send(client_sockets[i],&header.msg_type,1,0);
         send(client_sockets[i],&header.sender_id,1,0);
@@ -356,5 +422,5 @@ void broadcast_send_moved(uint8_t clientId, uint8_t new_pos) {
         send(client_sockets[i],&header.old_pos,sizeof(uint16_t),0);
         send(client_sockets[i],&header.new_pos,sizeof(uint16_t),0);
     }
-    pthread_mutex_unlock(&server_mutex);
+    
 }

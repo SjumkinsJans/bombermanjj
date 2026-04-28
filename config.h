@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 199309L
 #include <netinet/in.h> //structure for storing address information
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,7 +12,7 @@
 #include <sys/prctl.h>   // for prctl
 #include <signal.h>      // for SIGTERM
 #include <pthread.h>
-
+#include <time.h>
 
 #define MAX_PLAYERS 8
 #define TICKS_PER_SECOND 20

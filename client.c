@@ -119,7 +119,8 @@ void gameloop(int sockD) {
                 
                 break;
             case 'r':
-                send_set_ready(sockD);
+                if(game_status == 0)
+                    send_set_ready(sockD);
                 break;
         }
         
