@@ -42,7 +42,7 @@ int main(int argc,char *argv[]) {
     struct sockaddr_in servAddr;
 
     servAddr.sin_family = AF_INET;
-    servAddr.sin_port = htons(9001); //use some unused port
+    servAddr.sin_port = htons(8243); //use some unused port
     servAddr.sin_addr.s_addr = INADDR_ANY;
 
     int connectStatus = connect(sockD, (struct sockaddr*)&servAddr,sizeof(servAddr));

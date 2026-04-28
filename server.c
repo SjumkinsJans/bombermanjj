@@ -83,7 +83,7 @@ int main(void) {
     //define server address
     struct sockaddr_in servAddr;
     servAddr.sin_family = AF_INET;
-    servAddr.sin_port = htons(9001);
+    servAddr.sin_port = htons(8243);
     servAddr.sin_addr.s_addr = INADDR_ANY;
 
     //bind socket to the specified IP and port
