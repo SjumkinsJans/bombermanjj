@@ -35,7 +35,6 @@ void add_explosion(uint16_t pos,uint16_t owner_timer_ticks);
 void recv_bomb_attempt(int clientSock, uint8_t client_id);
 void broadcast_send_bomb(uint8_t client_id, uint16_t pos);
 void broadcast_send_bomb(uint8_t client_id, uint16_t pos);
-void broadcast_block_destroyed(uint16_t pos);
 void broadcast_bonus_available(uint16_t pos, uint8_t bonus_type);
 void broadcast_bonus_retrieved(uint8_t player_id, uint16_t pos);
 int bomb_at_pos(uint16_t pos);
@@ -60,7 +59,6 @@ uint8_t global_exp_timer;
 
 uint64_t last_movement_ms[MAX_PLAYERS];
 player_t players[MAX_PLAYERS];
-uint16_t exp_dur = 60;
 uint64_t last_movement_ms[MAX_PLAYERS] = {0};
 uint8_t players_alive;
 char *grid = NULL;
@@ -567,7 +565,6 @@ void explode_bomb(int bomb_index) {
             } else if (cell == 'S') {
                 grid[pos] = '*';
                 add_explosion(center,players[bombs[bomb_index].owner_id].bomb_timer_ticks);
-                broadcast_block_destroyed(pos); 
 
                 // Bonusa izloze the real gambling is here
                 // if (rand() % 100 < 30) {
@@ -739,24 +736,6 @@ void broadcast_send_bomb(uint8_t client_id, uint16_t pos) {
             send(client_sockets[i], &msg.target_id, 1, 0);
             send(client_sockets[i], &msg.player_id, 1, 0);
             send(client_sockets[i], &msg.pos, sizeof(uint16_t), 0);
-        }
-    }
-    pthread_mutex_unlock(&server_mutex);
-}
-
-void broadcast_block_destroyed(uint16_t pos) {
-    uint8_t msg_type = MSG_BLOCK_DESTROYED;
-    uint8_t sender_id = 254;
-    uint16_t net_pos = htons(pos);
-
-    pthread_mutex_lock(&server_mutex);
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (client_sockets[i] != -1) {
-            uint8_t target_id = (uint8_t)i;
-            send(client_sockets[i], &msg_type, 1, 0);
-            send(client_sockets[i], &sender_id, 1, 0);
-            send(client_sockets[i], &target_id, 1, 0);
-            send(client_sockets[i], &net_pos, sizeof(uint16_t), 0);
         }
     }
     pthread_mutex_unlock(&server_mutex);
