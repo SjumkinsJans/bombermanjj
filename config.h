@@ -212,6 +212,22 @@ typedef struct {
     uint16_t timer;
 } explosion_t;
 
+typedef struct {
+    uint8_t msg_type;
+    uint8_t sender_id;
+    uint8_t target_id;
+    uint8_t bonus_type;
+    uint16_t pos;
+} msg_bonus_available_t;
+
+typedef struct {
+    uint8_t msg_type;
+    uint8_t sender_id;
+    uint8_t target_id;
+    uint8_t player_id;
+    uint16_t pos;
+} msg_bonus_retrieved_t;
+
 void recv_all(int socket,void* buffer,ssize_t expected,int flags) {
     //printf("Receiving bytes !\n");
     ssize_t bytes_total = 0;
