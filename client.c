@@ -11,6 +11,7 @@ void send_hello(int sock,int sender_id,const char* clied_id,const char* player_n
 void send_leave();
 void send_set_ready();
 void send_move_attempt(int sock,uint8_t dir);
+void send_bomb_attempt(int sock);
 
 // receiving
 void* recv_msgs();
@@ -19,6 +20,10 @@ void recv_disconnect();
 void recv_set_status(int sockD);
 void recv_map(int sockD);
 void recv_moved(int sockD);
+void recv_explosion_start(int sock);
+void recv_explosion_end(int sock);
+void recv_death(int sock);
+
 uint8_t *grid = NULL;
 uint8_t player_id = 0;
 uint8_t game_status = 0;
@@ -116,7 +121,7 @@ void gameloop(int sockD) {
                 send_leave(sockD);
                 break;
             case ' ':
-                
+                send_bomb_attempt(sockD);
                 break;
             case 'r':
                 send_set_ready(sockD);
@@ -189,6 +194,37 @@ void send_move_attempt(int sock,uint8_t dir) {
     send(sock,&header.dir,1,0);
 }
 
+void send_bomb_attempt(int sock) {
+    msg_bomb_attempt_t msg;
+    msg.msg_type = MSG_BOMB_ATTEMPT;
+    pthread_mutex_lock(&client_mutex);
+    msg.sender_id = player_id;
+    pthread_mutex_unlock(&client_mutex);
+    msg.target_id = 255;
+
+    send(sock, &msg.msg_type, 1, 0);
+    send(sock, &msg.sender_id, 1, 0);
+    send(sock, &msg.target_id, 1, 0);
+}
+
+void recv_bomb(int sock) {
+    uint8_t sender_id, target_id, player_id_bomb;
+    recv_all(sock, &sender_id, 1, 0);
+    recv_all(sock, &target_id, 1, 0);
+    recv_all(sock, &player_id_bomb, 1, 0);
+
+    uint16_t pos;
+    recv_all(sock, &pos, sizeof(uint16_t), 0);
+    pos = ntohs(pos);
+
+    pthread_mutex_lock(&client_mutex);
+    if (grid != NULL) {
+        grid[pos] = '@';
+    }
+    pthread_mutex_unlock(&client_mutex);
+}
+
+
 void* recv_msgs(void *arg) {
             int sockD = (int)(intptr_t)arg;
             uint8_t msg_type;
@@ -219,6 +255,18 @@ void* recv_msgs(void *arg) {
                     break;
                 case MSG_MOVED:
                     recv_moved(sockD);
+                    break;
+                case MSG_EXPLOSION_START:
+                    recv_explosion_start(sockD);
+                    break;
+                case MSG_EXPLOSION_END:
+                    recv_explosion_end(sockD);
+                    break;
+                case MSG_DEATH:
+                    recv_death(sockD);
+                    break;
+                case MSG_BOMB:
+                    recv_bomb(sockD);
                     break;
                 default:
                     break;
@@ -311,7 +359,54 @@ void recv_moved(int sock) {
 
     uint16_t new_pos;
     recv_all(sock,&new_pos,sizeof(new_pos),0);
-    grid[old_pos] = '.';
-    grid[new_pos] = moved_id+48;
+    if(grid[old_pos] != '@') {
+        grid[old_pos] = '.';
+    }
+
+    grid[new_pos] = moved_id + 48;
+    pthread_mutex_unlock(&client_mutex);
+}
+
+void recv_explosion_start(int sock) {
+    uint8_t sender_id, target_id, radius;
+    recv_all(sock, &sender_id, 1, 0);
+    recv_all(sock, &target_id, 1, 0);
+    recv_all(sock, &radius, 1, 0);
+
+    uint16_t pos;
+    recv_all(sock, &pos, sizeof(uint16_t), 0);
+    pos = ntohs(pos);
+
+    pthread_mutex_lock(&client_mutex);
+    if (grid != NULL) grid[pos] = '*';
+    pthread_mutex_unlock(&client_mutex);
+}
+
+void recv_explosion_end(int sock) {
+    uint8_t sender_id, target_id, radius;
+    recv_all(sock, &sender_id, 1, 0);
+    recv_all(sock, &target_id, 1, 0);
+    recv_all(sock, &radius, 1, 0);
+
+    uint16_t pos;
+    recv_all(sock, &pos, sizeof(uint16_t), 0);
+    pos = ntohs(pos);
+
+    pthread_mutex_lock(&client_mutex);
+    if (grid != NULL) grid[pos] = '.';
+    pthread_mutex_unlock(&client_mutex);
+}
+
+void recv_death(int sock) {
+    uint8_t sender_id, target_id, dead_id;
+    recv_all(sock, &sender_id, 1, 0);
+    recv_all(sock, &target_id, 1, 0);
+    recv_all(sock, &dead_id, 1, 0);
+
+    pthread_mutex_lock(&client_mutex);
+    if (dead_id == player_id) {
+        // tu esi miris — pagaidām tikai ziņojums
+        mvprintw(0, 0, "YOU DIED!");
+    }
     pthread_mutex_unlock(&client_mutex);
 }

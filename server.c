@@ -25,6 +25,21 @@ void broadcast_send_moved(uint8_t clientId, uint8_t new_pos);
 
 void prepare_map(char *grid,uint8_t w,uint8_t h);
 
+void* tick_loop(void* arg);
+void explode_bomb(int bomb_index);
+void broadcast_explosion_start(uint16_t pos, uint8_t radius);
+void broadcast_explosion_end(uint16_t pos, uint8_t radius);
+void broadcast_death(uint8_t player_id);
+void add_explosion(uint16_t pos);
+void recv_bomb_attempt(int clientSock, uint8_t client_id);
+void broadcast_send_bomb(uint8_t client_id, uint16_t pos);
+void broadcast_send_bomb(uint8_t client_id, uint16_t pos);
+int bomb_at_pos(uint16_t pos);
+
+bomb_t *bombs = NULL;
+int bomb_count = 0;
+explosion_t *explosions = NULL;
+int explosion_count = 0;
 uint8_t game_status = GAME_LOBBY;
 uint8_t clientCount = 0;
 uint8_t players_ready = 0;
@@ -32,6 +47,7 @@ uint8_t freeClientIds[MAX_PLAYERS];
 uint8_t y_border = 11;
 uint8_t x_border = 21;
 player_t players[MAX_PLAYERS];
+uint16_t exp_dur = 300;
 
 char grid[11*21] = {
 "#####################"
@@ -74,6 +90,11 @@ int main(void) {
     //listen for connections
     listen(serverSockD,MAX_PLAYERS);
     //accepting loop
+
+    pthread_t tick_thread;
+    pthread_create(&tick_thread, NULL, tick_loop, NULL);
+    pthread_detach(tick_thread);
+
     while(1) {
 
         int clientSocket = accept(serverSockD,NULL,NULL);
@@ -151,8 +172,14 @@ void* process_client(void* arg) {
             break;
         case MSG_MOVE_ATTEMPT:
             uint8_t new_pos = recv_move_attempt(clientSocket,client_id,target_id); 
-            if(grid[new_pos] == '.')
+            if(
+                grid[new_pos] == '.'
+                && !bomb_at_pos(new_pos)
+            )
                 broadcast_send_moved(client_id,new_pos);
+            break;
+        case MSG_BOMB_ATTEMPT:
+            recv_bomb_attempt(clientSocket, client_id);
             break;
         default:
             break;
@@ -192,6 +219,7 @@ char* recv_hello(int clientSock,uint8_t sender_id,uint8_t target_id) {
     players[sender_id].alive = 1;
     players[sender_id].lives = 1;
     players[sender_id].bomb_count = 1;
+    players[sender_id].bomb_radius = 1;
     strcpy(players[sender_id].name,name);
     printf("%s is with us !\n",players[sender_id].name);
 
@@ -344,7 +372,7 @@ void broadcast_send_moved(uint8_t clientId, uint8_t new_pos) {
 
         header.client_id = clientId;
         header.old_pos = old_posi;
-        grid[header.old_pos] = '.';
+        if(grid[header.old_pos] != '@') grid[header.old_pos] = '.';
         header.new_pos = players[clientId].pos;
         grid[header.new_pos] = clientId+48;
         
@@ -355,6 +383,236 @@ void broadcast_send_moved(uint8_t clientId, uint8_t new_pos) {
         send(client_sockets[i],&header.client_id,1,0);
         send(client_sockets[i],&header.old_pos,sizeof(uint16_t),0);
         send(client_sockets[i],&header.new_pos,sizeof(uint16_t),0);
+    }
+    pthread_mutex_unlock(&server_mutex);
+}
+
+int bomb_at_pos(uint16_t pos) {
+    for(int i = 0; i < bomb_count; i++) {
+        uint16_t bpos =
+            make_cell_index(
+                bombs[i].row,
+                bombs[i].col,
+                x_border
+            );
+
+        if(bpos == pos)
+            return 1;
+    }
+
+    return 0;
+}
+
+void* tick_loop(void* arg) {
+    while(1) {
+        usleep(50000);
+
+        pthread_mutex_lock(&server_mutex);
+
+        // bumbu taimeri
+        for (int i = bomb_count - 1; i >= 0; i--) {
+            if (bombs[i].timer_ticks > 0) {
+                bombs[i].timer_ticks--;
+                if (bombs[i].timer_ticks == 0) {
+                    explode_bomb(i);
+                }
+            }
+        }
+
+        // sprādzienu tīrīšana
+        for (int i = explosion_count - 1; i >= 0; i--) {
+            explosions[i].timer--;
+            if (explosions[i].timer == 0) {
+                if(grid[explosions[i].pos] == '*') grid[explosions[i].pos] = '.';
+                broadcast_explosion_end(explosions[i].pos, 0);
+
+                // izdzēš no masīva
+                explosions[i] = explosions[explosion_count - 1];
+                explosion_count--;
+            }
+        }
+
+        pthread_mutex_unlock(&server_mutex);
+    }
+    return NULL;
+}
+
+void explode_bomb(int bomb_index) {
+
+    int row = bombs[bomb_index].row;
+    int col = bombs[bomb_index].col;
+    int radius = bombs[bomb_index].radius;
+
+    uint16_t center = make_cell_index(row, col, x_border);
+    grid[center] = '*';
+    add_explosion(center);
+
+    int dr[] = {-1, 1,  0, 0};
+    int dc[] = { 0, 0, -1, 1};
+
+    for (int d = 0; d < 4; d++) {
+        for (int r = 1; r <= radius; r++) {
+            int nr = row + dr[d] * r;
+            int nc = col + dc[d] * r;
+
+            if (nr < 0 || nr >= y_border || nc < 0 || nc >= x_border) break;
+
+            uint16_t pos = make_cell_index(nr, nc, x_border);
+            char cell = grid[pos];
+
+            if (cell == '#') {
+                break;
+            } else if (cell == 'S') {
+                grid[pos] = '*';
+                add_explosion(pos);
+                break;
+            } else if (cell == '@') {
+                grid[pos] = '*';
+                add_explosion(pos);
+
+                for (int j = 0; j < bomb_count; j++) {
+                    if (bombs[j].row == nr && bombs[j].col == nc) {
+                        bombs[j].timer_ticks = 1;
+                    }
+                }
+
+                break;
+            } else {
+                grid[pos] = '*';
+                add_explosion(pos);
+            }
+        }
+    }
+
+    for (int p = 0; p < MAX_PLAYERS; p++) {
+        if (players[p].alive && client_sockets[p] != -1) {
+            if (grid[players[p].pos] == '*') {
+                players[p].alive = 0;
+                broadcast_death(p);
+            }
+        }
+    }
+
+
+    bombs[bomb_index] = bombs[bomb_count - 1];
+    bomb_count--;
+}
+
+void broadcast_explosion_start(uint16_t pos, uint8_t radius) {
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (client_sockets[i] != -1) {
+            msg_explosion_start_t msg;
+            msg.msg_type = MSG_EXPLOSION_START;
+            msg.sender_id = 254;
+            msg.target_id = i;
+            msg.radius = radius;
+            msg.pos = htons(pos);
+
+            send(client_sockets[i], &msg.msg_type, 1, 0);
+            send(client_sockets[i], &msg.sender_id, 1, 0);
+            send(client_sockets[i], &msg.target_id, 1, 0);
+            send(client_sockets[i], &msg.radius, 1, 0);
+            send(client_sockets[i], &msg.pos, sizeof(uint16_t), 0);
+        }
+    }
+}
+
+void broadcast_death(uint8_t dead_player_id) {
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (client_sockets[i] != -1) {
+            msg_death_t msg;
+            msg.msg_type = MSG_DEATH;
+            msg.sender_id = 254;
+            msg.target_id = i;
+            msg.player_id = dead_player_id;
+
+            send(client_sockets[i], &msg.msg_type, 1, 0);
+            send(client_sockets[i], &msg.sender_id, 1, 0);
+            send(client_sockets[i], &msg.target_id, 1, 0);
+            send(client_sockets[i], &msg.player_id, 1, 0);
+        }
+    }
+}
+
+void add_explosion(uint16_t pos) {
+
+    explosions = realloc(
+        explosions,
+        (explosion_count + 1) * sizeof(explosion_t)
+    );
+
+    explosions[explosion_count].pos = pos;
+    explosions[explosion_count].timer = exp_dur;
+    explosion_count++;
+
+    broadcast_explosion_start(pos, 0);
+}
+
+void broadcast_explosion_end(uint16_t pos, uint8_t radius) {
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (client_sockets[i] != -1) {
+            msg_explosion_end_t msg;
+            msg.msg_type = MSG_EXPLOSION_END;
+            msg.sender_id = 254;
+            msg.target_id = i;
+            msg.radius = radius;
+            msg.pos = htons(pos);
+
+            send(client_sockets[i], &msg.msg_type, 1, 0);
+            send(client_sockets[i], &msg.sender_id, 1, 0);
+            send(client_sockets[i], &msg.target_id, 1, 0);
+            send(client_sockets[i], &msg.radius, 1, 0);
+            send(client_sockets[i], &msg.pos, sizeof(uint16_t), 0);
+        }
+    }
+}
+
+void recv_bomb_attempt(int clientSock, uint8_t client_id) {
+    pthread_mutex_lock(&server_mutex);
+    uint16_t pos = players[client_id].pos;
+    // pārbauda vai šajā šūnā jau ir bumba
+    for (int i = bomb_count - 1; i >= 0; i--) {
+        uint16_t bpos = make_cell_index(bombs[i].row, bombs[i].col, x_border);
+        if (bpos == pos) {
+            pthread_mutex_unlock(&server_mutex);
+            return;
+        }
+    }
+
+    bombs = realloc(bombs, (bomb_count + 1) * sizeof(bomb_t));
+    uint16_t row, col;
+    split_cell_index(pos, x_border, &row, &col);
+    bombs[bomb_count].owner_id = client_id;
+    bombs[bomb_count].row = row;
+    bombs[bomb_count].col = col;
+    bombs[bomb_count].radius = players[client_id].bomb_radius > 0
+                                ? players[client_id].bomb_radius : 1;
+    bombs[bomb_count].timer_ticks = 60;
+    bomb_count++;
+
+    grid[pos] = '@';
+    pthread_mutex_unlock(&server_mutex);
+
+    broadcast_send_bomb(client_id, pos);
+}
+
+void broadcast_send_bomb(uint8_t client_id, uint16_t pos) {
+    pthread_mutex_lock(&server_mutex);
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (client_sockets[i] != -1) {
+            msg_bomb_t msg;
+            msg.msg_type = MSG_BOMB;
+            msg.sender_id = 254;
+            msg.target_id = i;
+            msg.player_id = client_id;
+            msg.pos = htons(pos);
+
+            send(client_sockets[i], &msg.msg_type, 1, 0);
+            send(client_sockets[i], &msg.sender_id, 1, 0);
+            send(client_sockets[i], &msg.target_id, 1, 0);
+            send(client_sockets[i], &msg.player_id, 1, 0);
+            send(client_sockets[i], &msg.pos, sizeof(uint16_t), 0);
+        }
     }
     pthread_mutex_unlock(&server_mutex);
 }
