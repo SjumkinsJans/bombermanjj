@@ -15,13 +15,13 @@ void* process_client(void* arg);
 char* recv_hello(int clientSocket,uint8_t sender_id,uint8_t target_id);
 void recv_leave(int clientSock,uint8_t sender_id,uint8_t target_id);
 void recv_set_ready(int clientSock,uint8_t sender_id,uint8_t target_id);
-uint8_t recv_move_attempt(uint8_t clientSocket,uint8_t client_id,uint8_t target_id);
+int recv_move_attempt(uint8_t clientSocket,uint8_t client_id,uint8_t target_id);
 
 void send_welcome(int clientSocket,uint8_t clientId,const char *senderName);
 void send_disconnect(int clientSocket,uint8_t clientId);
 void broadcast_send_set_status(uint8_t gm_status);
 void broadcast_send_map(char *grid,uint8_t w,uint8_t h);
-void broadcast_send_moved(uint8_t clientId, uint8_t new_pos);
+void broadcast_send_moved(uint8_t clientId, uint16_t new_pos);
 
 void prepare_map(char *grid,uint8_t w,uint8_t h);
 
@@ -34,6 +34,9 @@ void add_explosion(uint16_t pos);
 void recv_bomb_attempt(int clientSock, uint8_t client_id);
 void broadcast_send_bomb(uint8_t client_id, uint16_t pos);
 void broadcast_send_bomb(uint8_t client_id, uint16_t pos);
+void broadcast_block_destroyed(uint16_t pos);
+void broadcast_bonus_available(uint16_t pos, uint8_t bonus_type);
+void broadcast_bonus_retrieved(uint8_t player_id, uint16_t pos);
 int bomb_at_pos(uint16_t pos);
 
 bomb_t *bombs = NULL;
@@ -47,18 +50,19 @@ uint8_t freeClientIds[MAX_PLAYERS];
 uint8_t y_border = 11;
 uint8_t x_border = 21;
 player_t players[MAX_PLAYERS];
-uint16_t exp_dur = 300;
+uint16_t exp_dur = 60;
+uint64_t last_movement_ms[MAX_PLAYERS] = {0};
 
 char grid[11*21] = {
 "#####################"
-"#0.......#..........#"
+"#0.......#..TTTTTT..#"
 "#........#.......2..#"
-"#........#..........#"
+"#....A...#..........#"
 "#........#####......#"
 "#............#......#"
 "#....#####...#......#"
 "#........#...#......#"
-"#........#...#..1...#"
+"#..RR....#...#..1...#"
 "#........#..........#"
 "#####################"
 };
@@ -171,12 +175,14 @@ void* process_client(void* arg) {
             recv_set_ready(clientSocket,client_id,target_id);
             break;
         case MSG_MOVE_ATTEMPT:
-            uint8_t new_pos = recv_move_attempt(clientSocket,client_id,target_id); 
-            if(
-                grid[new_pos] == '.'
-                && !bomb_at_pos(new_pos)
-            )
-                broadcast_send_moved(client_id,new_pos);
+            int new_pos = recv_move_attempt(clientSocket, client_id, target_id);
+            if(new_pos == -1) break;
+
+            char target = grid[new_pos];
+            // Atļaujam iet, ja tas ir tukšums vai bonuss, un tur nav bumbas
+            if((target == '.' || target == 'A' || target == 'R' || target == 'T') && !bomb_at_pos(new_pos)) {
+                broadcast_send_moved(client_id, new_pos);
+            }
             break;
         case MSG_BOMB_ATTEMPT:
             recv_bomb_attempt(clientSocket, client_id);
@@ -220,6 +226,7 @@ char* recv_hello(int clientSock,uint8_t sender_id,uint8_t target_id) {
     players[sender_id].lives = 1;
     players[sender_id].bomb_count = 1;
     players[sender_id].bomb_radius = 1;
+    players[sender_id].speed = 1;
     strcpy(players[sender_id].name,name);
     printf("%s is with us !\n",players[sender_id].name);
 
@@ -251,11 +258,20 @@ void recv_set_ready(int clientSock,uint8_t sender_id,uint8_t target_id) {
     
 }
 
-uint8_t recv_move_attempt(uint8_t clientSocket,uint8_t client_id,uint8_t target_id) {
+int recv_move_attempt(uint8_t clientSocket,uint8_t client_id,uint8_t target_id) {
     uint8_t dir;
-    uint8_t move;
+    int move;
     recv_all(clientSocket,&dir,1,0);
-    printf("%s want's to move %d ! \n",players[client_id].name,dir);
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint64_t now = (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    pthread_mutex_lock(&server_mutex);
+    if(now-last_movement_ms[client_id] < 1000/players[client_id].speed) {
+        pthread_mutex_unlock(&server_mutex);
+        return -1;
+    }
+    last_movement_ms[client_id] = now;
+    pthread_mutex_unlock(&server_mutex);
     switch (dir) {
         case 0:
             move = -x_border;
@@ -270,6 +286,7 @@ uint8_t recv_move_attempt(uint8_t clientSocket,uint8_t client_id,uint8_t target_
             move = +1;
             break;
     }
+    printf("%s want's to move to %d ! \n",players[client_id].name,players[client_id].pos+move);
     return players[client_id].pos+move;
 }
 
@@ -334,6 +351,11 @@ void prepare_map(char *grid,uint8_t w,uint8_t h) {
             }
         }
     }
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (client_sockets[i] != -1 && players[i].alive) {
+            grid[players[i].pos] = i + 48;
+        }
+    }
     pthread_mutex_unlock(&server_mutex);
 }
 
@@ -360,33 +382,65 @@ void broadcast_send_map(char *grid,uint8_t w,uint8_t h) {
     pthread_mutex_unlock(&server_mutex);
 }
 
-void broadcast_send_moved(uint8_t clientId, uint8_t new_pos) {
+void broadcast_send_moved(uint8_t clientId, uint16_t new_pos) {
     pthread_mutex_lock(&server_mutex);
+
     uint16_t old_posi = players[clientId].pos;
-    players[clientId].pos = new_pos;
-    for(int i = 0; i < MAX_PLAYERS;i++) {
-        msg_moved_t header;
-        header.msg_type = MSG_MOVED;
-        header.sender_id = 254;
-        header.target_id = i;
+    char target_cell = grid[new_pos];
 
-        header.client_id = clientId;
-        header.old_pos = old_posi;
-        if(grid[header.old_pos] != '@') grid[header.old_pos] = '.';
-        header.new_pos = players[clientId].pos;
-        grid[header.new_pos] = clientId+48;
-        
-        send(client_sockets[i],&header.msg_type,1,0);
-        send(client_sockets[i],&header.sender_id,1,0);
-        send(client_sockets[i],&header.target_id,1,0);
+    if (target_cell == 'A' || target_cell == 'R' || target_cell == 'T') {
+        if (target_cell == 'A') {
+            players[clientId].speed += 1;
+        } else if (target_cell == 'R') {
+            players[clientId].bomb_radius += 1;
+        } else if (target_cell == 'T') {
+            players[clientId].bomb_timer_ticks += 10;
+        }
 
-        send(client_sockets[i],&header.client_id,1,0);
-        send(client_sockets[i],&header.old_pos,sizeof(uint16_t),0);
-        send(client_sockets[i],&header.new_pos,sizeof(uint16_t),0);
+        for (int i = 0; i < MAX_PLAYERS; i++) {
+            if (client_sockets[i] != -1) {
+                uint8_t msg_type = MSG_BONUS_RETRIEVED;
+                uint8_t s_id = 254;
+                uint8_t t_id = i;
+                uint16_t net_pos = htons(new_pos);
+
+                send(client_sockets[i], &msg_type, 1, 0);
+                send(client_sockets[i], &s_id, 1, 0);
+                send(client_sockets[i], &t_id, 1, 0);
+                send(client_sockets[i], &clientId, 1, 0);
+                send(client_sockets[i], &net_pos, sizeof(uint16_t), 0);
+            }
+        }
     }
+
+    if (grid[old_posi] != '@') {
+        grid[old_posi] = '.';
+    }
+    players[clientId].pos = new_pos;
+    grid[new_pos] = clientId + 48;
+
+    uint16_t net_old = htons(old_posi);
+    uint16_t net_new = htons(new_pos);
+
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (client_sockets[i] != -1) {
+            msg_moved_t header;
+            header.msg_type = MSG_MOVED;
+            header.sender_id = 254;
+            header.target_id = i;
+            header.client_id = clientId;
+
+            send(client_sockets[i], &header.msg_type, 1, 0);
+            send(client_sockets[i], &header.sender_id, 1, 0);
+            send(client_sockets[i], &header.target_id, 1, 0);
+            send(client_sockets[i], &header.client_id, 1, 0);
+            send(client_sockets[i], &net_old, sizeof(uint16_t), 0);
+            send(client_sockets[i], &net_new, sizeof(uint16_t), 0);
+        }
+    }
+
     pthread_mutex_unlock(&server_mutex);
 }
-
 int bomb_at_pos(uint16_t pos) {
     for(int i = 0; i < bomb_count; i++) {
         uint16_t bpos =
@@ -465,6 +519,17 @@ void explode_bomb(int bomb_index) {
             } else if (cell == 'S') {
                 grid[pos] = '*';
                 add_explosion(pos);
+                broadcast_block_destroyed(pos); 
+
+                // Bonusa izloze the real gambling is here
+                if (rand() % 100 < 30) {
+                    uint8_t bonus_type = (rand() % 3) + 1;
+                    if (bonus_type == BONUS_SPEED) grid[pos] = 'A';
+                    else if (bonus_type == BONUS_RADIUS) grid[pos] = 'R';
+                    else if (bonus_type == BONUS_TIMER) grid[pos] = 'T';
+
+                    broadcast_bonus_available(pos, bonus_type);
+                }
                 break;
             } else if (cell == '@') {
                 grid[pos] = '*';
@@ -612,6 +677,62 @@ void broadcast_send_bomb(uint8_t client_id, uint16_t pos) {
             send(client_sockets[i], &msg.target_id, 1, 0);
             send(client_sockets[i], &msg.player_id, 1, 0);
             send(client_sockets[i], &msg.pos, sizeof(uint16_t), 0);
+        }
+    }
+    pthread_mutex_unlock(&server_mutex);
+}
+
+void broadcast_block_destroyed(uint16_t pos) {
+    uint8_t msg_type = MSG_BLOCK_DESTROYED;
+    uint8_t sender_id = 254;
+    uint16_t net_pos = htons(pos);
+
+    pthread_mutex_lock(&server_mutex);
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (client_sockets[i] != -1) {
+            uint8_t target_id = (uint8_t)i;
+            send(client_sockets[i], &msg_type, 1, 0);
+            send(client_sockets[i], &sender_id, 1, 0);
+            send(client_sockets[i], &target_id, 1, 0);
+            send(client_sockets[i], &net_pos, sizeof(uint16_t), 0);
+        }
+    }
+    pthread_mutex_unlock(&server_mutex);
+}
+
+void broadcast_bonus_available(uint16_t pos, uint8_t bonus_type) {
+    uint8_t msg_type = MSG_BONUS_AVAILABLE;
+    uint8_t sender_id = 254;
+    uint16_t net_pos = htons(pos);
+
+    pthread_mutex_lock(&server_mutex);
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (client_sockets[i] != -1) {
+            uint8_t target_id = (uint8_t)i;
+            send(client_sockets[i], &msg_type, 1, 0);
+            send(client_sockets[i], &sender_id, 1, 0);
+            send(client_sockets[i], &target_id, 1, 0);
+            send(client_sockets[i], &bonus_type, 1, 0);
+            send(client_sockets[i], &net_pos, sizeof(uint16_t), 0);
+        }
+    }
+    pthread_mutex_unlock(&server_mutex);
+}
+
+void broadcast_bonus_retrieved(uint8_t player_id, uint16_t pos) {
+    uint8_t msg_type = MSG_BONUS_RETRIEVED;
+    uint8_t sender_id = 254;
+    uint16_t net_pos = htons(pos);
+
+    pthread_mutex_lock(&server_mutex);
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (client_sockets[i] != -1) {
+            uint8_t target_id = (uint8_t)i;
+            send(client_sockets[i], &msg_type, 1, 0);
+            send(client_sockets[i], &sender_id, 1, 0);
+            send(client_sockets[i], &target_id, 1, 0);
+            send(client_sockets[i], &player_id, 1, 0);
+            send(client_sockets[i], &net_pos, sizeof(uint16_t), 0);
         }
     }
     pthread_mutex_unlock(&server_mutex);

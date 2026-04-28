@@ -23,6 +23,8 @@ void recv_moved(int sockD);
 void recv_explosion_start(int sock);
 void recv_explosion_end(int sock);
 void recv_death(int sock);
+void recv_bonus_available(int sock);
+void recv_bonus_retrieved(int sock);
 
 uint8_t *grid = NULL;
 uint8_t player_id = 0;
@@ -268,6 +270,12 @@ void* recv_msgs(void *arg) {
                 case MSG_BOMB:
                     recv_bomb(sockD);
                     break;
+                case MSG_BONUS_AVAILABLE:
+                    recv_bonus_available(sockD);
+                    break;
+                case MSG_BONUS_RETRIEVED:
+                    recv_bonus_retrieved(sockD);
+                    break;
                 default:
                     break;
                 }
@@ -345,20 +353,19 @@ void recv_map(int sock) {
 
 void recv_moved(int sock) {
     pthread_mutex_lock(&client_mutex);
-    uint8_t sender_id;
-    recv_all(sock,&sender_id,sizeof(sender_id),0);
+    uint8_t sender_id, target_id, moved_id;
+    uint16_t old_pos, new_pos;
 
-    uint8_t target_id;
-    recv_all(sock,&target_id,sizeof(target_id),0);
+    recv_all(sock, &sender_id, 1, 0);
+    recv_all(sock, &target_id, 1, 0);
+    recv_all(sock, &moved_id, 1, 0);
 
-    uint8_t moved_id;
-    recv_all(sock,&moved_id,sizeof(moved_id),0);
+    recv_all(sock, &old_pos, sizeof(uint16_t), 0);
+    old_pos = ntohs(old_pos);
 
-    uint16_t old_pos;
-    recv_all(sock,&old_pos,sizeof(old_pos),0);
+    recv_all(sock, &new_pos, sizeof(uint16_t), 0);
+    new_pos = ntohs(new_pos);
 
-    uint16_t new_pos;
-    recv_all(sock,&new_pos,sizeof(new_pos),0);
     if(grid[old_pos] != '@') {
         grid[old_pos] = '.';
     }
@@ -405,8 +412,50 @@ void recv_death(int sock) {
 
     pthread_mutex_lock(&client_mutex);
     if (dead_id == player_id) {
-        // tu esi miris — pagaidām tikai ziņojums
         mvprintw(0, 0, "YOU DIED!");
+    }
+    pthread_mutex_unlock(&client_mutex);
+}
+
+void recv_bonus_available(int sock) {
+    uint8_t sender_id, target_id, bonus_type;
+    uint16_t pos;
+
+    recv_all(sock, &sender_id, 1, 0);
+    recv_all(sock, &target_id, 1, 0);
+    recv_all(sock, &bonus_type, 1, 0);
+    recv_all(sock, &pos, sizeof(uint16_t), 0);
+    
+    pos = ntohs(pos);
+
+    pthread_mutex_lock(&client_mutex);
+    if (grid != NULL) {
+
+        if (bonus_type == BONUS_SPEED) grid[pos] = 'A';
+        else if (bonus_type == BONUS_RADIUS) grid[pos] = 'R';
+        else if (bonus_type == BONUS_TIMER) grid[pos] = 'T';
+    }
+    pthread_mutex_unlock(&client_mutex);
+}
+
+void recv_bonus_retrieved(int sock) {
+    uint8_t sender_id, target_id, player_id_who_got_it;
+    uint16_t pos;
+
+    // Saņemam datus 
+    recv_all(sock, &sender_id, 1, 0);
+    recv_all(sock, &target_id, 1, 0);
+    recv_all(sock, &player_id_who_got_it, 1, 0);
+    recv_all(sock, &pos, sizeof(uint16_t), 0);
+    
+    pos = ntohs(pos);
+
+    pthread_mutex_lock(&client_mutex);
+    if (grid != NULL) {
+
+        if (grid[pos] == 'A' || grid[pos] == 'R' || grid[pos] == 'T') {
+            grid[pos] = '.'; 
+        }
     }
     pthread_mutex_unlock(&client_mutex);
 }
