@@ -1,4 +1,4 @@
-#define _POSIX_C_SOURCE 199309L
+#define _GNU_SOURCE
 #include <netinet/in.h> //structure for storing address information
 #include <stdio.h>
 #include <stdlib.h>
@@ -162,6 +162,55 @@ typedef struct {
     uint16_t old_pos;
     uint16_t new_pos;
 } msg_moved_t;
+
+typedef struct {
+    uint8_t msg_type;
+    uint8_t sender_id;
+    uint8_t target_id;
+    uint8_t winner_id;
+} msg_winner_t;
+
+typedef struct {
+    uint8_t msg_type;
+    uint8_t sender_id;
+    uint8_t target_id;
+} msg_bomb_attempt_t;
+
+typedef struct {
+    uint8_t msg_type;
+    uint8_t sender_id;
+    uint8_t target_id;
+    uint8_t player_id;
+    uint16_t pos;
+} msg_bomb_t;
+
+typedef struct {
+    uint8_t msg_type;
+    uint8_t sender_id;
+    uint8_t target_id;
+    uint8_t radius;
+    uint16_t pos;
+} msg_explosion_start_t;
+
+typedef struct {
+    uint8_t msg_type;
+    uint8_t sender_id;
+    uint8_t target_id;
+    uint8_t radius;
+    uint16_t pos;
+} msg_explosion_end_t;
+
+typedef struct {
+    uint8_t msg_type;
+    uint8_t sender_id;
+    uint8_t target_id;
+    uint8_t player_id;
+} msg_death_t;
+
+typedef struct {
+    uint16_t pos;
+    uint16_t timer;
+} explosion_t;
 
 void recv_all(int socket,void* buffer,ssize_t expected,int flags) {
     //printf("Receiving bytes !\n");
